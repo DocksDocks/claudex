@@ -62,6 +62,10 @@ assert_contains "$help_output" '--dry-run'
 assert_contains "$help_output" '--yes'
 assert_contains "$help_output" '--device-login'
 
+settings_generator=$(sed -n '/^SETTINGS_FILE=/,/^rm -f /p' "$REPO_ROOT/install.sh")
+assert_contains "$settings_generator" 'skillOverrides: {'
+assert_contains "$settings_generator" '"claude-api": "user-invocable-only"'
+
 linux_bin="$TEST_ROOT/linux-bin"
 make_platform "$linux_bin" Linux x86_64
 cat > "$linux_bin/apt-get" <<'EOF'

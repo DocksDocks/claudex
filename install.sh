@@ -651,6 +651,9 @@ rm -f "$runtime_tmp"
 SETTINGS_FILE="$CONFIG_DIR/claude-settings.json"
 settings_tmp=$(mktemp "$CONFIG_DIR/.claude-settings.XXXXXX")
 jq -n --arg command "$BIN_DIR/claudex-statusline" '{
+  skillOverrides: {
+    "claude-api": "user-invocable-only"
+  },
   statusLine: {
     type: "command",
     command: $command,

@@ -29,6 +29,11 @@ applies. The upstream API supports a larger maximum window, but claudex stays at
 API pricing multiplier maps to ChatGPT subscription quota accounting. Ordinary
 `claude` remains unchanged.
 
+Claude Code's bundled `/claude-api` reference can consume most of a 272K window
+when loaded. The isolated claudex settings make that skill user-invocable only,
+preventing automatic activation while preserving explicit `/claude-api` use.
+This override does not apply to ordinary `claude` sessions.
+
 ## Install with the guided wizard
 
 The wizard supports macOS and Linux on Intel/AMD 64-bit and ARM64 systems. It
