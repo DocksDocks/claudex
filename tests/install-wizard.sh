@@ -117,6 +117,28 @@ assert_contains "$mac_output" 'Dry run complete; no files were changed.'
   exit 1
 }
 
+old_claude_bin="$TEST_ROOT/old-claude-bin"
+make_platform "$old_claude_bin" Linux x86_64
+cat > "$old_claude_bin/claude" <<'EOF'
+#!/bin/sh
+printf '%s\n' '2.1.192 (Claude Code)'
+EOF
+cat > "$old_claude_bin/apt-get" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod 700 "$old_claude_bin/claude" "$old_claude_bin/apt-get"
+old_claude_output=$(env \
+  HOME="$TEST_ROOT/old-claude-home" \
+  SHELL=/bin/bash \
+  PATH="$old_claude_bin:/usr/bin:/bin" \
+  "$REPO_ROOT/install.sh" --dry-run 2>&1) || {
+    printf '%s\n' 'old Claude Code dry-run failed' >&2
+    exit 1
+  }
+assert_contains "$old_claude_output" \
+  "Claude Code: found $old_claude_bin/claude (2.1.192); would install current native release (requires 2.1.193+)"
+
 linux_deps_bin="$TEST_ROOT/linux-deps-bin"
 make_dependency_fixture "$linux_deps_bin" Linux x86_64 apt-get
 linux_deps_output=''

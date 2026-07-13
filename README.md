@@ -18,6 +18,17 @@ identified by their server-reported duration: 18,000 seconds is rendered as
 `5h`, and 604,800 seconds as `7d`. A window is omitted when it is absent.
 Quota data older than 15 minutes is suppressed rather than presented as current.
 
+Claude Code normally treats an unrecognized gateway model as a 200K model.
+`claudex` instead sets both its assumed context size and auto-compaction capacity
+to 272,000 tokens, only for the claudex process. Claude Code 2.1.193 added the
+[custom-model context override](https://code.claude.com/docs/en/env-vars), and
+OpenAI documents 272K as the boundary before
+[GPT-5.6 Sol long-context pricing](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+applies. The upstream API supports a larger maximum window, but claudex stays at
+272K to avoid crossing that boundary. OpenAI does not publicly document how the
+API pricing multiplier maps to ChatGPT subscription quota accounting. Ordinary
+`claude` remains unchanged.
+
 ## Install with the guided wizard
 
 The wizard supports macOS and Linux on Intel/AMD 64-bit and ARM64 systems. It
@@ -40,7 +51,8 @@ and `lsof` on macOS or `ss` from `iproute2` on Linux.
 The same run then:
 
 1. Reuses Claude Code when present or installs it with Anthropic's current
-   official native installer.
+   official native installer. Versions older than 2.1.193 are upgraded because
+   they cannot apply the custom-model context override used by claudex.
 2. Reuses a current CLIProxyAPI or installs the current official release for
    the detected platform. Downloaded archives must match the official release
    checksum before extraction.

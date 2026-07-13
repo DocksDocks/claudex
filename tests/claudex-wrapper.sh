@@ -23,6 +23,8 @@ EOF
 cat > "$BIN_DIR/claude" <<'EOF'
 #!/bin/sh
 printf 'cwd=%s\n' "$PWD"
+printf 'max_context=%s\n' "${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}"
+printf 'auto_compact=%s\n' "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}"
 printf 'args='
 printf '<%s>' "$@"
 printf '\n'
@@ -46,6 +48,10 @@ case "$from_home" in
   *'args='*'<--help>'*) ;;
   *) printf '%s\n' 'claudex did not preserve arguments after changing workspace' >&2; exit 1 ;;
 esac
+case "$from_home" in
+  *'max_context=272000'*'auto_compact=272000'*) ;;
+  *) printf '%s\n' 'claudex did not pin the GPT-5.6 Sol context and compaction windows' >&2; exit 1 ;;
+esac
 
 from_other=$(
   cd "$OTHER_DIR"
@@ -54,11 +60,17 @@ from_other=$(
     PATH="$BIN_DIR:/usr/bin:/bin" \
     XDG_BIN_HOME="$BIN_DIR" \
     XDG_CONFIG_HOME="$TEST_HOME/.config" \
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS=999999 \
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW=999999 \
     "$REPO_ROOT/bin/claudex" --help
 )
 case "$from_other" in
   *"cwd=$OTHER_DIR"*) ;;
   *) printf '%s\n' 'claudex changed a non-HOME working directory' >&2; exit 1 ;;
+esac
+case "$from_other" in
+  *'max_context=272000'*'auto_compact=272000'*) ;;
+  *) printf '%s\n' 'inherited context settings overrode the claudex limit' >&2; exit 1 ;;
 esac
 
 printf '%s\n' 'claudex wrapper fixtures passed'

@@ -7,6 +7,7 @@ DEVICE_LOGIN=0
 AUTO_YES=0
 DRY_RUN=0
 PATH_BLOCK_ADDED=0
+MIN_CLAUDE_VERSION=2.1.193
 
 usage() {
   cat <<EOF
@@ -184,6 +185,21 @@ cliproxy_version() {
     head -n 1
 }
 
+version_at_least() {
+  local current=$1 minimum=$2
+  awk -v current="$current" -v minimum="$minimum" 'BEGIN {
+    split(current, current_parts, ".")
+    split(minimum, minimum_parts, ".")
+    for (i = 1; i <= 3; i++) {
+      current_part = current_parts[i] + 0
+      minimum_part = minimum_parts[i] + 0
+      if (current_part > minimum_part) exit 0
+      if (current_part < minimum_part) exit 1
+    }
+    exit 0
+  }'
+}
+
 printf '%s\n' 'claudex guided installer'
 printf 'Platform: %s %s\n' "$PLATFORM_NAME" "$DISPLAY_ARCH"
 if [ "${#MISSING_COMMANDS[@]}" -eq 0 ]; then
@@ -208,7 +224,13 @@ fi
 DETECTED_CLAUDE=$(command -v claude 2>/dev/null || true)
 if [ -n "$DETECTED_CLAUDE" ]; then
   DETECTED_CLAUDE_VERSION=$("$DETECTED_CLAUDE" --version 2>/dev/null | awk 'NR == 1 { print $1 }')
-  printf 'Claude Code: found %s (%s)\n' "$DETECTED_CLAUDE" "${DETECTED_CLAUDE_VERSION:-version unknown}"
+  if [ -n "$DETECTED_CLAUDE_VERSION" ] \
+     && version_at_least "$DETECTED_CLAUDE_VERSION" "$MIN_CLAUDE_VERSION"; then
+    printf 'Claude Code: found %s (%s)\n' "$DETECTED_CLAUDE" "$DETECTED_CLAUDE_VERSION"
+  else
+    printf 'Claude Code: found %s (%s); would install current native release (requires %s+)\n' \
+      "$DETECTED_CLAUDE" "${DETECTED_CLAUDE_VERSION:-version unknown}" "$MIN_CLAUDE_VERSION"
+  fi
 else
   printf '%s\n' 'Claude Code: missing; would install Anthropic official native release'
 fi
@@ -338,8 +360,8 @@ install_system_dependencies() {
 install_system_dependencies
 
 install_official_claude() {
-  local installer native_target
-  confirm_action 'Claude Code is missing. Install Anthropic official native Claude Code?'
+  local prompt=$1 installer native_target
+  confirm_action "$prompt"
   native_target="$HOME/.local/bin/claude"
   [ ! -e "$native_target" ] || backup_file "$native_target"
   installer=$(mktemp "${TMPDIR:-/tmp}/claude-code-install.XXXXXX")
@@ -421,14 +443,30 @@ install_latest_cliproxy() {
 
 CLAUDE_BINARY=$(command -v claude || true)
 if [ -z "$CLAUDE_BINARY" ]; then
-  install_official_claude
+  install_official_claude 'Claude Code is missing. Install Anthropic official native Claude Code?'
   CLAUDE_BINARY=$(command -v claude || true)
+else
+  CLAUDE_VERSION=$("$CLAUDE_BINARY" --version 2>/dev/null | awk 'NR == 1 { print $1 }')
+  if [ -z "$CLAUDE_VERSION" ] \
+     || ! version_at_least "$CLAUDE_VERSION" "$MIN_CLAUDE_VERSION"; then
+    install_official_claude \
+      "Claude Code ${CLAUDE_VERSION:-version unknown} cannot set a custom-model context window. Install the current official native release?"
+    hash -r
+    CLAUDE_BINARY=$(command -v claude || true)
+  fi
 fi
 [ -n "$CLAUDE_BINARY" ] || {
   printf '%s\n' 'claudex installer: official Claude Code installation did not produce a claude executable' >&2
   exit 1
 }
 CLAUDE_BINARY=$(absolute_path "$CLAUDE_BINARY")
+CLAUDE_VERSION=$("$CLAUDE_BINARY" --version 2>/dev/null | awk 'NR == 1 { print $1 }')
+if [ -z "$CLAUDE_VERSION" ] \
+   || ! version_at_least "$CLAUDE_VERSION" "$MIN_CLAUDE_VERSION"; then
+  printf 'claudex installer: Claude Code %s or newer is required for the 272K custom-model context window\n' \
+    "$MIN_CLAUDE_VERSION" >&2
+  exit 1
+fi
 
 SOURCE_CLIPROXY_BINARY=$DETECTED_CLIPROXY
 CLIPROXY_RELEASE_FILE=''
