@@ -9,7 +9,7 @@ CLAUDEX_TOKEN_FILE="$CONFIG_DIR/client-token"
 CLIPROXY_CONFIG="$CONFIG_DIR/cliproxyapi.yaml"
 CLAUDEX_PROXY_HELPER="${XDG_BIN_HOME:-$HOME/.local/bin}/claudex-proxy"
 CLAUDE_BINARY=$(command -v claude || true)
-CLAUDEX_CONTEXT_WINDOW=272000
+CLAUDEX_CONTEXT_WINDOW=372000
 
 CLAUDEX_PORT=$(awk '/^port: [0-9]+$/ { print $2; exit }' "$CLIPROXY_CONFIG" 2>/dev/null)
 case "$CLAUDEX_PORT" in

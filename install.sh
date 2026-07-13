@@ -463,7 +463,7 @@ CLAUDE_BINARY=$(absolute_path "$CLAUDE_BINARY")
 CLAUDE_VERSION=$("$CLAUDE_BINARY" --version 2>/dev/null | awk 'NR == 1 { print $1 }')
 if [ -z "$CLAUDE_VERSION" ] \
    || ! version_at_least "$CLAUDE_VERSION" "$MIN_CLAUDE_VERSION"; then
-  printf 'claudex installer: Claude Code %s or newer is required for the 272K custom-model context window\n' \
+  printf 'claudex installer: Claude Code %s or newer is required for the 372K custom-model context window\n' \
     "$MIN_CLAUDE_VERSION" >&2
   exit 1
 fi

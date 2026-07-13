@@ -28,16 +28,16 @@ render() {
   render_input "$input"
 }
 
-context_272=$(printf '%s\n' \
-  '{"model":{"display_name":"gpt-5.6-sol"},"workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":25,"context_window_size":272000}}' |
+context_372=$(printf '%s\n' \
+  '{"model":{"display_name":"gpt-5.6-sol"},"workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":25,"context_window_size":372000}}' |
   env \
     HOME="$TEST_HOME" \
     CLAUDEX_STATUSLINE=1 \
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW=272000 \
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW=372000 \
     "$REPO_ROOT/bin/claudex-statusline")
-case "$context_272" in
-  *'ctx 25%'*'(68k/272k)'*) ;;
-  *) printf '%s\n' '272k claudex context window was not rendered correctly' >&2; exit 1 ;;
+case "$context_372" in
+  *'ctx 25%'*'(93k/372k)'*) ;;
+  *) printf '%s\n' '372k claudex context window was not rendered correctly' >&2; exit 1 ;;
 esac
 
 printf '{"fetched_at":%s,"windows":[{"window_seconds":604800,"used_percent":36,"reset_at":%s}]}\n' \

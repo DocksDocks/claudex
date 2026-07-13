@@ -20,16 +20,19 @@ Quota data older than 15 minutes is suppressed rather than presented as current.
 
 Claude Code normally treats an unrecognized gateway model as a 200K model.
 `claudex` instead sets both its assumed context size and auto-compaction capacity
-to 272,000 tokens, only for the claudex process. Claude Code 2.1.193 added the
+to 372,000 tokens, only for the claudex process. Claude Code 2.1.193 added the
 [custom-model context override](https://code.claude.com/docs/en/env-vars), and
-OpenAI documents 272K as the boundary before
-[GPT-5.6 Sol long-context pricing](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
-applies. The upstream API supports a larger maximum window, but claudex stays at
-272K to avoid crossing that boundary. OpenAI does not publicly document how the
-API pricing multiplier maps to ChatGPT subscription quota accounting. Ordinary
-`claude` remains unchanged.
+OpenAI's bundled
+[Codex model catalog](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)
+assigns GPT-5.6 Sol a 372K context window. The public API separately supports a
+1.05M maximum and applies long-context pricing above 272K input tokens, while a
+live ChatGPT-authenticated Codex catalog can advertise a different service-side
+limit. Because claudex uses Codex OAuth rather than API-key billing, it matches
+the bundled Codex value to avoid premature compaction. OpenAI does not publicly
+document how long-context requests map to ChatGPT subscription quota accounting.
+Ordinary `claude` remains unchanged.
 
-Claude Code's bundled `/claude-api` reference can consume most of a 272K window
+Claude Code's bundled `/claude-api` reference can consume most of the context
 when loaded. The isolated claudex settings make that skill user-invocable only,
 preventing automatic activation while preserving explicit `/claude-api` use.
 This override does not apply to ordinary `claude` sessions.

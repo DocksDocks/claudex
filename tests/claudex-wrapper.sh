@@ -49,7 +49,7 @@ case "$from_home" in
   *) printf '%s\n' 'claudex did not preserve arguments after changing workspace' >&2; exit 1 ;;
 esac
 case "$from_home" in
-  *'max_context=272000'*'auto_compact=272000'*) ;;
+  *'max_context=372000'*'auto_compact=372000'*) ;;
   *) printf '%s\n' 'claudex did not pin the GPT-5.6 Sol context and compaction windows' >&2; exit 1 ;;
 esac
 
@@ -69,7 +69,7 @@ case "$from_other" in
   *) printf '%s\n' 'claudex changed a non-HOME working directory' >&2; exit 1 ;;
 esac
 case "$from_other" in
-  *'max_context=272000'*'auto_compact=272000'*) ;;
+  *'max_context=372000'*'auto_compact=372000'*) ;;
   *) printf '%s\n' 'inherited context settings overrode the claudex limit' >&2; exit 1 ;;
 esac
 
