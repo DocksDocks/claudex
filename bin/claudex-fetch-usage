@@ -1,0 +1,76 @@
+#!/bin/bash
+set -u
+
+umask 077
+exec 2>/dev/null
+
+AUTH_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/claudex/auth"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claudex"
+CACHE_FILE="$STATE_DIR/usage.json"
+
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+
+shopt -s nullglob
+credentials=("$AUTH_DIR"/codex-*.json)
+shopt -u nullglob
+[ "${#credentials[@]}" -eq 1 ] || exit 0
+
+credentials_file="${credentials[0]}"
+
+access_token=$(jq -r '.access_token // empty' "$credentials_file" 2>/dev/null)
+account_id=$(jq -r '.account_id // empty' "$credentials_file" 2>/dev/null)
+[ -n "$access_token" ] && [ -n "$account_id" ] || exit 0
+
+headers_file=$(mktemp "$STATE_DIR/.usage-headers.XXXXXX") || exit 0
+response_file=$(mktemp "$STATE_DIR/.usage-response.XXXXXX") || {
+  rm -f "$headers_file"
+  exit 0
+}
+cache_tmp=$(mktemp "$STATE_DIR/.usage-cache.XXXXXX") || {
+  rm -f "$headers_file" "$response_file"
+  exit 0
+}
+trap 'rm -f "$headers_file" "$response_file" "$cache_tmp"' EXIT
+
+printf 'Authorization: Bearer %s\nChatGPT-Account-Id: %s\n' \
+  "$access_token" "$account_id" > "$headers_file"
+unset access_token account_id
+
+if ! curl -fsS --max-time 10 \
+  -H "@$headers_file" \
+  -H 'Accept: application/json' \
+  -o "$response_file" \
+  'https://chatgpt.com/backend-api/wham/usage'; then
+  exit 0
+fi
+rm -f "$headers_file"
+
+now=$(date +%s)
+if ! jq --argjson fetched_at "$now" '
+  [.rate_limit.primary_window, .rate_limit.secondary_window]
+  | map(select(
+      . != null
+      and (.limit_window_seconds == 18000 or .limit_window_seconds == 604800)
+      and (.used_percent | type) == "number"
+      and .used_percent >= 0 and .used_percent <= 100
+      and (.reset_at | type) == "number"
+    ))
+  | unique_by(.limit_window_seconds)
+  | if length == 0 then error("no supported Codex usage windows") else . end
+  | {
+      fetched_at: $fetched_at,
+      windows: map({
+        window_seconds: .limit_window_seconds,
+        used_percent: (.used_percent | round),
+        reset_at: (.reset_at | floor)
+      })
+    }
+' "$response_file" > "$cache_tmp" 2>/dev/null; then
+  exit 0
+fi
+
+chmod 600 "$cache_tmp"
+mv -f "$cache_tmp" "$CACHE_FILE"
+trap - EXIT
+rm -f "$response_file"

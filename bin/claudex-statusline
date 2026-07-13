@@ -1,0 +1,184 @@
+#!/bin/bash
+# Claudex-only status line: Claude-style renderer with Codex OAuth usage data.
+
+if [ "${CLAUDEX_STATUSLINE:-}" != "1" ]; then
+  fallback="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.sh"
+  [ -x "$fallback" ] && exec "$fallback"
+  exit 0
+fi
+
+input=$(cat)
+
+sanitize_terminal_text() {
+  LC_ALL=C tr -d '\001-\037\177-\237'
+}
+
+file_mtime() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    stat -f %m "$1" 2>/dev/null || echo 0
+  else
+    stat -c %Y "$1" 2>/dev/null || echo 0
+  fi
+}
+
+model=$(echo "$input" | jq -r '.model.display_name // ""')
+model="${model%% (*}"
+model=$(printf '%s' "$model" | sanitize_terminal_text)
+dir=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
+dir_name=$(basename "$dir")
+dir_name=$(printf '%s' "$dir_name" | sanitize_terminal_text)
+
+branch=""
+if [ -d "${dir}/.git" ] || git -C "$dir" rev-parse --git-dir > /dev/null 2>&1; then
+  branch=$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || git -C "$dir" rev-parse --short HEAD 2>/dev/null)
+fi
+branch=$(printf '%s' "$branch" | sanitize_terminal_text)
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claudex"
+AUTH_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/claudex/auth"
+USAGE_CACHE="$STATE_DIR/usage.json"
+FETCH_MARKER="$STATE_DIR/usage.fetching"
+FETCH_INTERVAL=60
+CACHE_MAX_AGE=900
+
+shopt -s nullglob
+auth_files=("$AUTH_DIR"/codex-*.json)
+shopt -u nullglob
+auth_count=${#auth_files[@]}
+auth_mtime=0
+[ "$auth_count" -ne 1 ] || auth_mtime=$(file_mtime "${auth_files[0]}")
+
+now=$(date +%s)
+cache_mtime=$(file_mtime "$USAGE_CACHE")
+cache_age=$(( now - cache_mtime ))
+
+spawn_usage_fetch() {
+  local marker_age fetcher
+  marker_age=$(( now - $(file_mtime "$FETCH_MARKER") ))
+  fetcher="${XDG_BIN_HOME:-$HOME/.local/bin}/claudex-fetch-usage"
+  if [ "$marker_age" -ge "$FETCH_INTERVAL" ]; then
+    mkdir -p "$STATE_DIR"
+    chmod 700 "$STATE_DIR"
+    touch "$FETCH_MARKER"
+    "$fetcher" > /dev/null 2>&1 &
+  fi
+}
+
+five_h="" seven_d="" five_h_reset="" seven_d_reset=""
+cache_is_fresh=0
+cache_fetched_at=$(jq -r 'if (.fetched_at | type) == "number" then (.fetched_at | floor) else empty end' "$USAGE_CACHE" 2>/dev/null)
+case "$cache_fetched_at" in
+  ''|*[!0-9]*) cache_data_age=-1 ;;
+  *) cache_data_age=$(( now - cache_fetched_at )) ;;
+esac
+if [ "$auth_count" -eq 1 ] \
+   && [ "$cache_mtime" -ge "$auth_mtime" ] \
+   && [ "$cache_data_age" -ge 0 ] \
+   && [ "$cache_data_age" -le "$CACHE_MAX_AGE" ] \
+   && jq -e '
+        (.windows | type) == "array"
+        and all(.windows[];
+          (.window_seconds == 18000 or .window_seconds == 604800)
+          and (.used_percent | type) == "number"
+          and .used_percent >= 0 and .used_percent <= 100
+          and (.reset_at | type) == "number"
+        )
+      ' "$USAGE_CACHE" >/dev/null 2>&1; then
+  cache_is_fresh=1
+  five_h=$(jq -r '.windows[] | select(.window_seconds == 18000) | .used_percent' "$USAGE_CACHE" | head -n 1)
+  seven_d=$(jq -r '.windows[] | select(.window_seconds == 604800) | .used_percent' "$USAGE_CACHE" | head -n 1)
+  five_h_reset=$(jq -r '.windows[] | select(.window_seconds == 18000) | .reset_at' "$USAGE_CACHE" | head -n 1)
+  seven_d_reset=$(jq -r '.windows[] | select(.window_seconds == 604800) | .reset_at' "$USAGE_CACHE" | head -n 1)
+fi
+if [ "$auth_count" -eq 1 ] \
+   && { [ "$cache_is_fresh" -eq 0 ] || [ "$cache_age" -ge "$FETCH_INTERVAL" ]; }; then
+  spawn_usage_fetch
+fi
+
+format_tokens_k() {
+  local k=$1
+  if [ "$k" -ge 1000 ]; then
+    if [ $((k % 1000)) -eq 0 ]; then
+      echo "$((k / 1000))M"
+    else
+      awk -v k="$k" 'BEGIN { printf "%.1fM", k/1000 }'
+    fi
+  else
+    echo "${k}k"
+  fi
+}
+
+compute_delta() {
+  local reset_epoch="$1"
+  [ -z "$reset_epoch" ] && return
+  case "$reset_epoch" in *[!0-9]*) return ;; esac
+  local diff days hours minutes
+  diff=$(( reset_epoch - $(date -u +%s) ))
+  [ "$diff" -le 0 ] && echo "now" && return
+  days=$(( diff / 86400 ))
+  hours=$(( (diff % 86400) / 3600 ))
+  minutes=$(( (diff % 3600) / 60 ))
+  if [ "$days" -gt 0 ]; then
+    echo "${days}d"
+  elif [ "$hours" -gt 0 ]; then
+    echo "${hours}h"
+  else
+    echo "${minutes}m"
+  fi
+}
+
+used=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+ctx_str="" ctx_tokens_str=""
+if [ -n "$used" ]; then
+  ctx_total=$(echo "$input" | jq -r '.context_window.context_window_size // empty' 2>/dev/null)
+  if [ -n "$ctx_total" ]; then
+    ctx_used_k=$(awk -v p="$used" -v t="$ctx_total" 'BEGIN { printf "%.0f", (p/100) * (t/1000) }')
+    effective_total=$ctx_total
+    if [ -n "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" ] \
+       && [ "$CLAUDE_CODE_AUTO_COMPACT_WINDOW" -lt "$ctx_total" ]; then
+      effective_total=$CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    fi
+    effective_total_k=$(( effective_total / 1000 ))
+    if [ "$effective_total_k" -gt 0 ]; then
+      effective_pct=$(awk -v u="$ctx_used_k" -v t="$effective_total_k" 'BEGIN { printf "%.0f", (u/t) * 100 }')
+      ctx_str="${effective_pct}%"
+    fi
+    ctx_tokens_str="$(format_tokens_k "$ctx_used_k")/$(format_tokens_k "$effective_total_k")"
+  else
+    ctx_str="$(printf '%.0f%%' "$used")"
+  fi
+fi
+
+SEP="\033[90m • \033[0m"
+printf "\033[38;5;208m\033[1m%s\033[22m\033[0m" "$model"
+printf "\033[90m | \033[0m"
+printf "\033[1m\033[38;2;76;208;222m%s\033[22m\033[0m" "$dir_name"
+if [ -n "$branch" ]; then
+  printf "%b" "$SEP"
+  printf "\033[1m\033[38;2;192;103;222m%s\033[22m\033[0m" "$branch"
+fi
+
+if [ -n "$ctx_str" ]; then
+  printf "\033[90m | \033[0m"
+  printf "\033[38;2;130;160;230mctx %s\033[0m" "$ctx_str"
+  [ -n "$ctx_tokens_str" ] && printf " \033[2m\033[38;2;156;162;175m(%s)\033[0m" "$ctx_tokens_str"
+fi
+if [ -n "$five_h" ] || [ -n "$seven_d" ]; then
+  printf "\033[90m | \033[0m"
+fi
+if [ -n "$five_h" ]; then
+  printf "\033[38;2;100;200;200m5h %s%%\033[0m" "$five_h"
+  if [ -n "$five_h_reset" ]; then
+    delta=$(compute_delta "$five_h_reset")
+    [ -n "$delta" ] && printf " \033[2m\033[38;2;156;162;175m(%s)\033[0m" "$delta"
+  fi
+fi
+if [ -n "$seven_d" ]; then
+  [ -n "$five_h" ] && printf "%b" "$SEP"
+  printf "\033[38;2;230;180;90m7d %s%%\033[0m" "$seven_d"
+  if [ -n "$seven_d_reset" ]; then
+    delta=$(compute_delta "$seven_d_reset")
+    [ -n "$delta" ] && printf " \033[2m\033[38;2;156;162;175m(%s)\033[0m" "$delta"
+  fi
+fi
+printf "\n"

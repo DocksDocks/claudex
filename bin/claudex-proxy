@@ -1,0 +1,219 @@
+#!/bin/sh
+set -eu
+
+umask 077
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claudex"
+CLAUDEX_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claudex"
+CLAUDEX_WRITABLE_PATH="$CLAUDEX_STATE_DIR"
+CLIPROXY_BINARY="${XDG_BIN_HOME:-$HOME/.local/bin}/cli-proxy-api"
+CLIPROXY_CONFIG="$CONFIG_DIR/cliproxyapi.yaml"
+CLAUDEX_LOG_FILE="$CLAUDEX_STATE_DIR/cliproxyapi.log"
+CLAUDEX_PID_FILE="$CLAUDEX_STATE_DIR/cliproxyapi.pid"
+CLAUDEX_PORT=$(awk '/^port: [0-9]+$/ { print $2; exit }' "$CLIPROXY_CONFIG" 2>/dev/null)
+case "$CLAUDEX_PORT" in
+  ''|*[!0-9]*)
+    printf '%s\n' "claudex-proxy: invalid proxy configuration: $CLIPROXY_CONFIG" >&2
+    exit 1
+    ;;
+esac
+CLAUDEX_BASE_URL="http://127.0.0.1:$CLAUDEX_PORT"
+
+health_check() {
+  curl -fsS --max-time 2 "$CLAUDEX_BASE_URL/healthz" >/dev/null 2>&1
+}
+
+read_pid() {
+  [ -r "$CLAUDEX_PID_FILE" ] || return 1
+  pid=$(sed -n '1p' "$CLAUDEX_PID_FILE")
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$pid"
+}
+
+pid_matches_expected() {
+  pid=$1
+  kill -0 "$pid" 2>/dev/null || return 1
+
+  if [ -r "/proc/$pid/cmdline" ]; then
+    first_arg=$(tr '\000' '\n' < "/proc/$pid/cmdline" | sed -n '1p')
+    [ "$first_arg" = "$CLIPROXY_BINARY" ] || return 1
+    tr '\000' '\n' < "/proc/$pid/cmdline" |
+      awk -v expected="$CLIPROXY_CONFIG" '
+        previous == "-config" && $0 == expected { found = 1 }
+        { previous = $0 }
+        END { exit(found ? 0 : 1) }
+      '
+    return $?
+  fi
+
+  command_line=$(ps -ww -p "$pid" -o command= 2>/dev/null || true)
+  case "$command_line" in
+    "$CLIPROXY_BINARY"*" -config $CLIPROXY_CONFIG"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+find_expected_pid() {
+  found_pid=''
+  if [ -d /proc ] && [ -r /proc/self/cmdline ]; then
+    for proc_dir in /proc/[0-9]*; do
+      [ -d "$proc_dir" ] || continue
+      candidate_pid=${proc_dir##*/}
+      if pid_matches_expected "$candidate_pid"; then
+        [ -z "$found_pid" ] || return 2
+        found_pid=$candidate_pid
+      fi
+    done
+  else
+    for candidate_pid in $(ps -axo pid= 2>/dev/null); do
+      if pid_matches_expected "$candidate_pid"; then
+        [ -z "$found_pid" ] || return 2
+        found_pid=$candidate_pid
+      fi
+    done
+  fi
+  [ -n "$found_pid" ] || return 1
+  printf '%s\n' "$found_pid"
+}
+
+redacted_tail() {
+  if [ ! -r "$CLAUDEX_LOG_FILE" ]; then
+    printf '%s\n' 'claudex-proxy: no log file yet'
+    return 0
+  fi
+
+  tail -n 100 "$CLAUDEX_LOG_FILE" |
+    sed -E \
+      -e 's/([Aa]uthorization:[[:space:]]*(Bearer|Basic))[[:space:]]+[^[:space:]]+/\1 [REDACTED]/g' \
+      -e 's/((access|refresh|id)[_-]?[Tt]oken["]?[[:space:]:=]+)["]?[^[:space:]",}]+/\1[REDACTED]/g' \
+      -e 's/(([Aa][Pp][Ii][_-]?[Kk]ey|[Cc]lient[_-]?[Tt]oken)["]?[[:space:]:=]+)["]?[^[:space:]",}]+/\1[REDACTED]/g'
+}
+
+start_proxy() {
+  mkdir -p "$CLAUDEX_STATE_DIR" "$CLAUDEX_WRITABLE_PATH/logs"
+  chmod 0700 "$CLAUDEX_STATE_DIR" "$CLAUDEX_WRITABLE_PATH/logs"
+  touch "$CLAUDEX_LOG_FILE"
+  chmod 0600 "$CLAUDEX_LOG_FILE"
+
+  if recorded_pid=$(read_pid 2>/dev/null); then
+    if ! pid_matches_expected "$recorded_pid"; then
+      rm -f "$CLAUDEX_PID_FILE"
+    fi
+  elif [ -e "$CLAUDEX_PID_FILE" ]; then
+    rm -f "$CLAUDEX_PID_FILE"
+  fi
+  if ! read_pid >/dev/null 2>&1; then
+    if discovered_pid=$(find_expected_pid); then
+      printf '%s\n' "$discovered_pid" > "$CLAUDEX_PID_FILE"
+      chmod 0600 "$CLAUDEX_PID_FILE"
+    fi
+  fi
+
+  if pid=$(read_pid 2>/dev/null); then
+    if pid_matches_expected "$pid"; then
+      if health_check; then
+        printf '%s\n' "claudex-proxy: healthy on $CLAUDEX_BASE_URL (pid $pid)"
+        return 0
+      fi
+
+      printf '%s\n' "claudex-proxy: restarting unhealthy dedicated process (pid $pid)" >&2
+      pid_matches_expected "$pid" && kill "$pid"
+      i=0
+      while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 30 ]; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+      pid_matches_expected "$pid" && kill -KILL "$pid"
+    fi
+    rm -f "$CLAUDEX_PID_FILE"
+  elif [ -e "$CLAUDEX_PID_FILE" ]; then
+    rm -f "$CLAUDEX_PID_FILE"
+  fi
+
+  if health_check; then
+    printf '%s\n' "claudex-proxy: $CLAUDEX_BASE_URL is healthy but is not the dedicated configured process; refusing to start another proxy" >&2
+    return 1
+  fi
+
+  printf '%s\n' "claudex-proxy: starting on $CLAUDEX_BASE_URL"
+  nohup env \
+    -u OPENAI_API_KEY \
+    -u ANTHROPIC_API_KEY \
+    WRITABLE_PATH="$CLAUDEX_WRITABLE_PATH" \
+    "$CLIPROXY_BINARY" -config "$CLIPROXY_CONFIG" \
+    >>"$CLAUDEX_LOG_FILE" 2>&1 &
+  pid=$!
+  printf '%s\n' "$pid" > "$CLAUDEX_PID_FILE"
+  chmod 0600 "$CLAUDEX_PID_FILE"
+
+  i=0
+  while [ "$i" -lt 50 ]; do
+    if pid_matches_expected "$pid" && health_check; then
+      printf '%s\n' "claudex-proxy: healthy on $CLAUDEX_BASE_URL (pid $pid)"
+      return 0
+    fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+
+  printf '%s\n' 'claudex-proxy: startup failed; recent redacted log output follows' >&2
+  redacted_tail >&2
+  pid_matches_expected "$pid" && kill "$pid"
+  rm -f "$CLAUDEX_PID_FILE"
+  return 1
+}
+
+stop_proxy() {
+  if ! pid=$(read_pid 2>/dev/null); then
+    [ ! -e "$CLAUDEX_PID_FILE" ] || rm -f "$CLAUDEX_PID_FILE"
+    printf '%s\n' 'claudex-proxy: dedicated proxy is not running'
+    return 0
+  fi
+
+  if ! pid_matches_expected "$pid"; then
+    rm -f "$CLAUDEX_PID_FILE"
+    printf '%s\n' "claudex-proxy: removed stale PID file; process $pid was not the dedicated proxy"
+    return 0
+  fi
+
+  pid_matches_expected "$pid" && kill "$pid"
+  i=0
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  pid_matches_expected "$pid" && kill -KILL "$pid"
+  rm -f "$CLAUDEX_PID_FILE"
+  printf '%s\n' 'claudex-proxy: stopped dedicated proxy'
+}
+
+status_proxy() {
+  process_status='not running'
+  if pid=$(read_pid 2>/dev/null); then
+    if pid_matches_expected "$pid"; then
+      process_status="running (pid $pid)"
+    else
+      process_status='not running (stale PID file)'
+      rm -f "$CLAUDEX_PID_FILE"
+    fi
+  fi
+
+  health_status='unhealthy'
+  health_check && health_status='healthy'
+  printf '%s\n' "Process: $process_status"
+  printf '%s\n' "HTTP: $health_status ($CLAUDEX_BASE_URL/healthz)"
+}
+
+case "${1:-}" in
+  start) start_proxy ;;
+  stop) stop_proxy ;;
+  status) status_proxy ;;
+  logs) redacted_tail ;;
+  *)
+    printf '%s\n' 'Usage: claudex-proxy {start|stop|status|logs}' >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,67 @@
+#!/bin/sh
+set -eu
+
+umask 077
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claudex"
+CLAUDEX_SETTINGS_FILE="$CONFIG_DIR/claude-settings.json"
+CLAUDEX_TOKEN_FILE="$CONFIG_DIR/client-token"
+CLIPROXY_CONFIG="$CONFIG_DIR/cliproxyapi.yaml"
+CLAUDEX_PROXY_HELPER="${XDG_BIN_HOME:-$HOME/.local/bin}/claudex-proxy"
+CLAUDE_BINARY=$(command -v claude || true)
+
+CLAUDEX_PORT=$(awk '/^port: [0-9]+$/ { print $2; exit }' "$CLIPROXY_CONFIG" 2>/dev/null)
+case "$CLAUDEX_PORT" in
+  ''|*[!0-9]*)
+    printf '%s\n' "claudex: invalid proxy configuration: $CLIPROXY_CONFIG" >&2
+    exit 1
+    ;;
+esac
+CLAUDEX_BASE_URL="http://127.0.0.1:$CLAUDEX_PORT"
+[ -n "$CLAUDE_BINARY" ] || {
+  printf '%s\n' 'claudex: Claude Code CLI is not installed' >&2
+  exit 1
+}
+
+"$CLAUDEX_PROXY_HELPER" start >&2
+
+if [ ! -r "$CLAUDEX_TOKEN_FILE" ]; then
+  printf '%s\n' "claudex: missing protected client token file: $CLAUDEX_TOKEN_FILE" >&2
+  exit 1
+fi
+
+if [ ! -r "$CLAUDEX_SETTINGS_FILE" ]; then
+  printf '%s\n' "claudex: missing Claude settings: $CLAUDEX_SETTINGS_FILE" >&2
+  exit 1
+fi
+
+client_token=$(sed -n '1p' "$CLAUDEX_TOKEN_FILE")
+case "$client_token" in
+  ''|*[!0-9a-f]*)
+    printf '%s\n' 'claudex: protected client token is invalid' >&2
+    exit 1
+    ;;
+esac
+[ "${#client_token}" -eq 64 ] || {
+  printf '%s\n' 'claudex: protected client token is invalid' >&2
+  exit 1
+}
+
+# Claude Code intentionally does not persist workspace trust for $HOME. Prefer
+# the conventional project root there, while preserving every other cwd.
+if [ "$PWD" = "$HOME" ] && [ -d "$HOME/projects" ]; then
+  cd "$HOME/projects"
+fi
+
+exec env \
+  -u ANTHROPIC_API_KEY \
+  -u OPENAI_API_KEY \
+  -u CLAUDE_CODE_OAUTH_TOKEN \
+  ANTHROPIC_BASE_URL="$CLAUDEX_BASE_URL" \
+  ANTHROPIC_AUTH_TOKEN="$client_token" \
+  CLAUDE_CODE_SUBAGENT_MODEL='gpt-5.6-sol' \
+  CLAUDE_CODE_ALWAYS_ENABLE_EFFORT='1' \
+  CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY='3' \
+  ENABLE_TOOL_SEARCH='false' \
+  CLAUDEX_STATUSLINE='1' \
+  "$CLAUDE_BINARY" --settings "$CLAUDEX_SETTINGS_FILE" --model 'gpt-5.6-sol' "$@"

@@ -1,0 +1,13 @@
+# Runtime credentials and generated state never belong in this repository.
+client-token
+cliproxyapi.yaml
+runtime.env
+codex-*.json
+auth/
+*.pid
+*.log
+usage.json
+.env
+.env.*
+*.bundle
+*.backup-*

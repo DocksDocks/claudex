@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Install ShellCheck on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install ShellCheck on macOS
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+      - name: Check Bash syntax
+        run: bash -n install.sh bin/* tests/*.sh
+      - name: Run ShellCheck
+        run: shellcheck install.sh bin/* tests/*.sh
+      - name: Test usage fetch and status line
+        run: |
+          tests/install-wizard.sh
+          tests/claudex-wrapper.sh
+          tests/fetch-usage.sh
+          tests/proxy-lifecycle.sh
+          tests/statusline.sh
